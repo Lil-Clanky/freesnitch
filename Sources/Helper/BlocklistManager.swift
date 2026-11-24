@@ -105,8 +105,12 @@ final class BlocklistManager: @unchecked Sendable {
     @discardableResult
     func refreshIfDue() async -> Bool {
         let now = clock()
-        let (domainsDue, feedsDue) = queue.sync {
-            (domainSchedule.isDue(at: now), feedSchedule.isDue(at: now))
+        // Checked and claimed in one step, so two ticks can't both start.
+        let (domainsDue, feedsDue): (Bool, Bool) = queue.sync {
+            let due = (domainSchedule.isDue(at: now), feedSchedule.isDue(at: now))
+            if due.0 { domainSchedule.running = true }
+            if due.1 { feedSchedule.running = true }
+            return due
         }
         guard domainsDue || feedsDue else { return false }
         await refresh(domains: domainsDue, feeds: feedsDue)
