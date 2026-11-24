@@ -40,8 +40,9 @@ final class BlocklistManager: @unchecked Sendable {
     /// Test seam. When set, feeds are read through this instead of the
     /// network, so feed handling can be exercised deterministically.
     var ipFeedFetcher: (@Sendable (IPBlocklistFeed) async -> IPFeedFetchResult)?
-    /// Whether every enabled feed in the last published refresh could be read.
-    private var ipLastPublishedAllRead = true
+    /// Whether every enabled feed in the last finished feed download could be
+    /// read, published or not. The schedule backs off on this.
+    private var ipLastDownloadAllRead = true
 
     /// The same seam for the domain lists. `nil` from it is a failed download.
     var listFetcher: (@Sendable (BlocklistInfo) async -> Set<String>?)?
@@ -350,7 +351,8 @@ final class BlocklistManager: @unchecked Sendable {
         var feeds = snapshot
         let enabled = feeds.enumerated().filter { $0.element.enabled }
         guard !enabled.isEmpty else {
-            return applyIPEntries([], to: feeds, generation: generation, allRead: true)
+            queue.sync { ipLastDownloadAllRead = true }
+            return applyIPEntries([], to: feeds, generation: generation)
         }
         var allRead = true
 
@@ -398,16 +400,16 @@ final class BlocklistManager: @unchecked Sendable {
             }
         }
 
-        return applyIPEntries(entries, to: feeds, generation: generation, allRead: allRead)
+        queue.sync { ipLastDownloadAllRead = allRead }
+        return applyIPEntries(entries, to: feeds, generation: generation)
     }
 
     /// A feed refresh for the download schedule (#491), answering whether
-    /// every enabled feed could be read. When a newer refresh or a toggle
-    /// overtook this one, the answer is that newer refresh's, since its
-    /// result is the one that is enforced.
+    /// every enabled feed could be read in this download, even when a toggle
+    /// overtook it and its result was dropped.
     private func refreshIPBlocklistsReportingReads() async -> Bool {
         await refreshIPBlocklists()
-        return queue.sync { ipLastPublishedAllRead }
+        return queue.sync { ipLastDownloadAllRead }
     }
 
     /// A toggle, then a refresh, returning once a refresh that started after
@@ -457,7 +459,7 @@ final class BlocklistManager: @unchecked Sendable {
     }
 
     @discardableResult
-    private func applyIPEntries(_ entries: [String], to feeds: [IPBlocklistFeed], generation: Int, allRead: Bool) -> Bool {
+    private func applyIPEntries(_ entries: [String], to feeds: [IPBlocklistFeed], generation: Int) -> Bool {
         let set = IPBlocklistSet(entries: entries)
         ipPublishLock.lock()
         defer { ipPublishLock.unlock() }
@@ -468,7 +470,6 @@ final class BlocklistManager: @unchecked Sendable {
             ipSet = set
             ipFeedsCache = feeds
             ipPublishedGeneration = generation
-            ipLastPublishedAllRead = allRead
             return feeds
         }
         guard let published else { return false }
