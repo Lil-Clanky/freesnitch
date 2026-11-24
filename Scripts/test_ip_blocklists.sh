@@ -1138,7 +1138,12 @@ struct IPBlocklistHarness {
         checks.expect(scheduled.ipFeeds().first(where: { $0.id.uuidString == feedID })?.enabled == false,
                       "an address feed switched off during its download must stay off")
         checks.expect(!scheduled.currentIPBlocklist().contains("100.64.1.1"),
-                      "an address feed switched off during its download must block nothing")
+                      "an address feed switched off during its download must not publish what it downloaded")
+        // The toggle's own refresh, which the app always sends after a switch,
+        // then takes the feed's old entries out as well.
+        await scheduled.refreshIPBlocklists()
+        checks.expect(scheduled.currentIPBlocklist().isEmpty,
+                      "an address feed switched off during its download must block nothing after the toggle's refresh")
         try? store.updateBlocklist(onlyList)
         scheduled.setIPFeedEnabled(idString: feedID, enabled: true)
         scheduled.listFetcher = { _ in ["ads.example"] }

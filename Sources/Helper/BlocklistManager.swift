@@ -40,10 +40,6 @@ final class BlocklistManager: @unchecked Sendable {
     /// Test seam. When set, feeds are read through this instead of the
     /// network, so feed handling can be exercised deterministically.
     var ipFeedFetcher: (@Sendable (IPBlocklistFeed) async -> IPFeedFetchResult)?
-    /// Whether every enabled feed in the last finished feed download could be
-    /// read, published or not. The schedule backs off on this.
-    private var ipLastDownloadAllRead = true
-
     /// The same seam for the domain lists. `nil` from it is a failed download.
     var listFetcher: (@Sendable (BlocklistInfo) async -> Set<String>?)?
 
@@ -126,7 +122,7 @@ final class BlocklistManager: @unchecked Sendable {
             if feeds { feedSchedule.running = true }
         }
         async let domainsOK = domains ? refresh() : true
-        async let feedsOK = feeds ? refreshIPBlocklistsReportingReads() : true
+        async let feedsOK = feeds ? downloadIPFeeds().allRead : true
         let (domainsDone, feedsDone) = await (domainsOK, feedsOK)
         let finished = clock()
         queue.sync {
@@ -171,13 +167,11 @@ final class BlocklistManager: @unchecked Sendable {
                 set.formUnion(edits.added)
                 set.subtract(edits.removed)
                 downloadedSets[list.id] = set
-                // Written onto the list as it is now, not as it was when the
-                // download started: the user may have switched it off in the
-                // meantime, and a stale copy would switch it back on.
-                if var updated = store.allBlocklists().first(where: { $0.id == list.id }) {
-                    updated.entryCount = set.count
-                    updated.lastUpdated = Date()
-                    try? self.store.updateBlocklist(updated)
+                // Only the download's own fields are written, never `enabled`:
+                // the user may have switched the list off in the meantime,
+                // and a stale copy would switch it back on.
+                guard (try? self.store.recordBlocklistDownload(id: list.id, entryCount: set.count, at: Date())) == true else {
+                    continue
                 }
                 // Kept per list, on disk, so the GUI can ask what is on a list
                 // without anyone holding one in memory (#79). A failure here
@@ -343,6 +337,13 @@ final class BlocklistManager: @unchecked Sendable {
     /// its result was dropped rather than published.
     @discardableResult
     func refreshIPBlocklists() async -> Bool {
+        await downloadIPFeeds().published
+    }
+
+    /// The feed download itself. Besides whether its result was published, it
+    /// says whether every enabled feed could be read, which the download
+    /// schedule backs off on (#491) even when a toggle overtook it.
+    private func downloadIPFeeds() async -> (published: Bool, allRead: Bool) {
         _ = ipFeeds()
         let (generation, snapshot): (Int, [IPBlocklistFeed]) = queue.sync {
             ipRefreshGeneration += 1
@@ -351,8 +352,7 @@ final class BlocklistManager: @unchecked Sendable {
         var feeds = snapshot
         let enabled = feeds.enumerated().filter { $0.element.enabled }
         guard !enabled.isEmpty else {
-            queue.sync { ipLastDownloadAllRead = true }
-            return applyIPEntries([], to: feeds, generation: generation)
+            return (applyIPEntries([], to: feeds, generation: generation), true)
         }
         var allRead = true
 
@@ -400,17 +400,9 @@ final class BlocklistManager: @unchecked Sendable {
             }
         }
 
-        queue.sync { ipLastDownloadAllRead = allRead }
-        return applyIPEntries(entries, to: feeds, generation: generation)
+        return (applyIPEntries(entries, to: feeds, generation: generation), allRead)
     }
 
-    /// A feed refresh for the download schedule (#491), answering whether
-    /// every enabled feed could be read in this download, even when a toggle
-    /// overtook it and its result was dropped.
-    private func refreshIPBlocklistsReportingReads() async -> Bool {
-        await refreshIPBlocklists()
-        return queue.sync { ipLastDownloadAllRead }
-    }
 
     /// A toggle, then a refresh, returning once a refresh that started after
     /// the toggle has been published, so the caller answers with counts from
