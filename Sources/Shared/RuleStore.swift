@@ -1196,7 +1196,8 @@ public final class RuleStore: @unchecked Sendable {
         // fails after a reset does not keep blocking them (#491). A name the
         // source also lists comes back with the next good download.
         try deleteBlocklistEntries(id: id, domains: Array(edits.added))
-        try recountBlocklist(id: id)
+        // Nothing was downloaded, so the time of the last download stays.
+        try recountBlocklist(id: id, touchingLastUpdated: false)
     }
 
     public func blocklist(id: UUID) -> BlocklistInfo? {
@@ -1294,7 +1295,7 @@ public final class RuleStore: @unchecked Sendable {
     /// The stored count follows the stored entries, so the sidebar and the pane
     /// header cannot disagree with the list they describe.
     @discardableResult
-    private func recountBlocklist(id: UUID) throws -> BlocklistInfo {
+    private func recountBlocklist(id: UUID, touchingLastUpdated: Bool = true) throws -> BlocklistInfo {
         try queue.sync {
             guard var current = blocklistLocked(id: id) else { throw StoreError.blocklistNotFound(id) }
             var count = 0
@@ -1304,13 +1305,20 @@ public final class RuleStore: @unchecked Sendable {
                 sqlite3_bind_text(stmt, 1, id.uuidString, -1, SQLITE_TRANSIENT)
                 if sqlite3_step(stmt) == SQLITE_ROW { count = Int(sqlite3_column_int(stmt, 0)) }
             }
+            current.entryCount = count
+            guard touchingLastUpdated else {
+                try executeLocked("UPDATE blocklists SET entry_count=? WHERE id=?;") { stmt in
+                    sqlite3_bind_int(stmt, 1, Int32(count))
+                    sqlite3_bind_text(stmt, 2, id.uuidString, -1, SQLITE_TRANSIENT)
+                }
+                return current
+            }
             let now = Date()
             try executeLocked("UPDATE blocklists SET entry_count=?, last_updated=? WHERE id=?;") { stmt in
                 sqlite3_bind_int(stmt, 1, Int32(count))
                 sqlite3_bind_double(stmt, 2, now.timeIntervalSince1970)
                 sqlite3_bind_text(stmt, 3, id.uuidString, -1, SQLITE_TRANSIENT)
             }
-            current.entryCount = count
             current.lastUpdated = now
             return current
         }

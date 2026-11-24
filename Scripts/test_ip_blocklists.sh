@@ -1055,7 +1055,10 @@ struct IPBlocklistHarness {
                       "after its source changed, a failed download must not keep blocking the old source's names")
         checks.expect(scheduled.domains.contains("mine.example"),
                       "after its source changed, a hand-added name must still be blocked")
+        let beforeReset = store.allBlocklists().first(where: { $0.id == urlList.id })?.lastUpdated
         try? store.clearBlocklistEdits(id: urlList.id)
+        checks.expect(store.allBlocklists().first(where: { $0.id == urlList.id })?.lastUpdated == beforeReset,
+                      "a reset downloads nothing and must not claim the list was just updated")
         await scheduled.refreshAll()
         checks.expect(!scheduled.domains.contains("mine.example"),
                       "after a reset, a failed download must not keep blocking a name that was added by hand")

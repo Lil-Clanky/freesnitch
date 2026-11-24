@@ -407,7 +407,6 @@ final class BlocklistManager: @unchecked Sendable {
         return (applyIPEntries(entries, to: feeds, generation: generation), allRead)
     }
 
-
     /// A toggle, then a refresh, returning once a refresh that started after
     /// the toggle has been published, so the caller answers with counts from
     /// a download that already includes the change (#493).
