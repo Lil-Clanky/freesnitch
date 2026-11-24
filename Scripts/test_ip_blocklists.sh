@@ -1040,6 +1040,30 @@ struct IPBlocklistHarness {
                       "a domain list that fails to download must keep its last downloaded entries")
         scheduled.listFetcher = { _ in domainDownloads.bump(); return ["ads.example"] }
 
+        // The last good copy only stands for what the user still asks for.
+        // After the list's source changes, a failed download blocks nothing
+        // of the old source; after a reset, nothing they had added by hand.
+        let urlList = store.allBlocklists().first(where: { $0.enabled })!
+        _ = try? store.addBlocklistEntries(id: urlList.id, domains: ["mine.example"])
+        await scheduled.refreshAll()
+        checks.expect(scheduled.domains.contains("ads.example") && scheduled.domains.contains("mine.example"),
+                      "a good download must hold the source's names and the hand-added one")
+        _ = try? store.updateBlocklistURL(id: urlList.id, url: "https://lists.example.org/other.txt")
+        scheduled.listFetcher = { _ in nil }
+        await scheduled.refreshAll()
+        checks.expect(!scheduled.domains.contains("ads.example"),
+                      "after its source changed, a failed download must not keep blocking the old source's names")
+        checks.expect(scheduled.domains.contains("mine.example"),
+                      "after its source changed, a hand-added name must still be blocked")
+        try? store.clearBlocklistEdits(id: urlList.id)
+        await scheduled.refreshAll()
+        checks.expect(!scheduled.domains.contains("mine.example"),
+                      "after a reset, a failed download must not keep blocking a name that was added by hand")
+        _ = try? store.updateBlocklistURL(id: urlList.id, url: urlList.url)
+        scheduled.listFetcher = { _ in domainDownloads.bump(); return ["ads.example"] }
+        await scheduled.refreshAll()
+        checks.expect(scheduled.domains.contains("ads.example"), "the list must load again once its download works")
+
         // The feed's source moves on. "Refresh Lists" must pick it up.
         serve("192.0.2.0/24\n")
         await scheduled.refreshAll()

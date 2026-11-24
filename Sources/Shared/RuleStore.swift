@@ -1102,13 +1102,31 @@ public final class RuleStore: @unchecked Sendable {
         } catch {
             throw StoreError.invalidBlocklistURL(error.localizedDescription)
         }
-        return try queue.sync {
+        let edits = blocklistEdits(id: id)
+        let (updated, changed): (BlocklistInfo, Bool) = try queue.sync {
             guard var current = blocklistLocked(id: id) else { throw StoreError.blocklistNotFound(id) }
+            let changed = current.url != url
             try executeLocked("UPDATE blocklists SET url=? WHERE id=?;") { stmt in
                 sqlite3_bind_text(stmt, 1, url, -1, SQLITE_TRANSIENT)
                 sqlite3_bind_text(stmt, 2, id.uuidString, -1, SQLITE_TRANSIENT)
             }
             current.url = url
+            return (current, changed)
+        }
+        guard changed else { return updated }
+        // The old source's names are not what the user asked for any more.
+        // Until the new source downloads, the list holds only the names they
+        // added by hand; a download that fails then blocks nothing of the old
+        // source (#491).
+        try replaceBlocklistEntries(blocklistID: id, domains: Array(edits.added))
+        return try queue.sync {
+            guard var current = blocklistLocked(id: id) else { throw StoreError.blocklistNotFound(id) }
+            try executeLocked("UPDATE blocklists SET entry_count=?, last_updated=NULL WHERE id=?;") { stmt in
+                sqlite3_bind_int(stmt, 1, Int32(edits.added.count))
+                sqlite3_bind_text(stmt, 2, id.uuidString, -1, SQLITE_TRANSIENT)
+            }
+            current.entryCount = edits.added.count
+            current.lastUpdated = nil
             return current
         }
     }
@@ -1172,7 +1190,13 @@ public final class RuleStore: @unchecked Sendable {
     /// source says again.
     public func clearBlocklistEdits(id: UUID) throws {
         guard blocklist(id: id) != nil else { throw StoreError.blocklistNotFound(id) }
+        let edits = blocklistEdits(id: id)
         try setSetting(Self.blocklistEditsKey(id), "")
+        // Names added by hand leave the stored copy now, so a download that
+        // fails after a reset does not keep blocking them (#491). A name the
+        // source also lists comes back with the next good download.
+        try deleteBlocklistEntries(id: id, domains: Array(edits.added))
+        try recountBlocklist(id: id)
     }
 
     public func blocklist(id: UUID) -> BlocklistInfo? {
